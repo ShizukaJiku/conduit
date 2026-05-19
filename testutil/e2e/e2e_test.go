@@ -37,7 +37,7 @@ func sftpConfig(t *testing.T, srv *sftpserver.Server, local string) *config.Conf
 	return &config.Config{
 		LocalFolder:  local,
 		RemoteFolder: "", // sandboxed to srv.Root by the test server
-		PollSeconds:  0,
+		PollSeconds:  0,  // engine clamps 0 → 15s; initial FullSync runs before the first tick
 		Backend: config.Backend{Type: "sftp", SFTP: config.SFTPConfig{
 			Host: host, Port: port, User: srv.User, Password: srv.Pass,
 			InsecureHostKey: true,
@@ -91,6 +91,7 @@ func TestE2EWatchThroughCLI(t *testing.T) {
 
 	cmd := feat(t, "watch").NewCommand(deps)
 	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel() // stop the engine on every path, incl. t.Fatal in waitUntil
 	cmd.SetContext(ctx)
 	done := make(chan error, 1)
 	go func() { done <- cmd.RunE(cmd, nil) }()
@@ -131,9 +132,9 @@ func TestE2EWatchThroughCLI(t *testing.T) {
 		t.Fatal(err)
 	}
 	waitUntil(t, "rename reflected remotely", func() bool {
-		_, oldGone := remoteContent(srv, "a.txt")
+		_, oldStillThere := remoteContent(srv, "a.txt")
 		c, newThere := remoteContent(srv, "c.txt")
-		return !oldGone && newThere && c == "v2-bigger"
+		return !oldStillThere && newThere && c == "v2-bigger"
 	})
 
 	// Delete.
@@ -181,6 +182,7 @@ func TestE2EDownloadInitialThroughCLI(t *testing.T) {
 
 	cmd := feat(t, "download").NewCommand(deps)
 	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 	cmd.SetContext(ctx)
 	done := make(chan error, 1)
 	go func() { done <- cmd.RunE(cmd, nil) }()
@@ -218,6 +220,7 @@ func TestE2EDownloadPollingEngine(t *testing.T) {
 	e := dlengine.New(store, local, 0, nil, fk)
 
 	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 	done := make(chan error, 1)
 	go func() { done <- e.Run(ctx) }()
 
