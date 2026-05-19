@@ -132,6 +132,43 @@ func TestOpString(t *testing.T) {
 	}
 }
 
+func TestOpStringUnknown(t *testing.T) {
+	if got := Op(99).String(); got != "unknown" {
+		t.Errorf("Op(99).String() = %q, want unknown", got)
+	}
+}
+
+func TestEmitAfterCloseDoesNotBlock(t *testing.T) {
+	w, err := New(t.TempDir(), clock.NewFake())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Start(); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+	// done is closed → emit must return immediately, not deadlock.
+	doneCh := make(chan struct{})
+	go func() {
+		w.emit(Event{Op: Created, Path: "x"})
+		w.emitErr(errSentinel)
+		close(doneCh)
+	}()
+	select {
+	case <-doneCh:
+	case <-time.After(2 * time.Second):
+		t.Fatal("emit/emitErr blocked after Close")
+	}
+}
+
+var errSentinel = &sentinelErr{}
+
+type sentinelErr struct{}
+
+func (*sentinelErr) Error() string { return "sentinel" }
+
 func TestRenameMapsToDeleteThenCreate(t *testing.T) {
 	root := t.TempDir()
 	w := startWatcher(t, root)
