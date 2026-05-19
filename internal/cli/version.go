@@ -21,6 +21,9 @@ func newVersionCmd() *cobra.Command {
 		Use:   "version",
 		Short: "Imprime versión, commit y fecha de build",
 		Args:  cobra.NoArgs,
+		// Read-only: skip the root PersistentPreRunE (no migration/config
+		// side-effects; version must never fail for config reasons).
+		PersistentPreRunE: func(*cobra.Command, []string) error { return nil },
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			_, err := fmt.Fprintf(cmd.OutOrStdout(),
 				"conduit %s (commit %s, built %s)\n", version, commit, date)

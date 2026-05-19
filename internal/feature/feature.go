@@ -9,6 +9,7 @@ package feature
 
 import (
 	"sort"
+	"sync"
 
 	"github.com/spf13/cobra"
 
@@ -33,16 +34,22 @@ type Feature interface {
 	NewCommand(d Deps) *cobra.Command // builds the cobra subcommand
 }
 
-var registry = map[string]Feature{}
+var (
+	registryMu sync.RWMutex
+	registry   = map[string]Feature{}
+)
 
 // Register adds f to the plugin registry. It panics on an empty or
 // duplicate name so collisions fail loudly at process start rather than
-// silently shadowing a capability at runtime.
+// silently shadowing a capability at runtime. Guarded so registration is
+// race-free (same as the storage driver registry).
 func Register(f Feature) {
 	name := f.Name()
 	if name == "" {
 		panic("feature: Register called with empty Name()")
 	}
+	registryMu.Lock()
+	defer registryMu.Unlock()
 	if _, dup := registry[name]; dup {
 		panic("feature: duplicate registration for " + name)
 	}
@@ -51,10 +58,12 @@ func Register(f Feature) {
 
 // All returns every registered feature ordered by Name for stable output.
 func All() []Feature {
+	registryMu.RLock()
 	out := make([]Feature, 0, len(registry))
 	for _, f := range registry {
 		out = append(out, f)
 	}
+	registryMu.RUnlock()
 	sort.Slice(out, func(i, j int) bool { return out[i].Name() < out[j].Name() })
 	return out
 }

@@ -1,9 +1,13 @@
 // Package cli wires the conduit command tree. It builds the root command
-// from the feature registry and a core "version" command. It must never
-// import a concrete feature package — features self-register.
+// from the feature registry plus core commands (version, features). It
+// must never import a concrete feature package — features self-register.
 package cli
 
 import (
+	"fmt"
+	"os"
+	"text/tabwriter"
+
 	"github.com/spf13/cobra"
 
 	"github.com/ShizukaJiku/conduit/internal/config"
@@ -13,35 +17,71 @@ import (
 )
 
 // Execute builds and runs the root command.
-func Execute() error {
+func Execute() error { return newRoot().Execute() }
+
+// newRoot builds the full command tree (extracted for testability).
+func newRoot() *cobra.Command {
+	cfg := &config.Config{}
+	deps := feature.Deps{
+		Config:  cfg,
+		Storage: storage.New,
+		Log:     logx.New(os.Stderr), // until a feature opens the file sink
+	}
+
 	root := &cobra.Command{
 		Use:           "conduit",
 		Short:         "conduit — sincronizador de carpetas storage-agnóstico",
 		SilenceUsage:  true,
 		SilenceErrors: true,
+		// Resolve config (and migrate the legacy Python JSON on first run)
+		// after flags are parsed, before any subcommand runs. The shared
+		// *cfg is filled in place so features see the resolved values.
+		PersistentPreRunE: func(cmd *cobra.Command, _ []string) error {
+			errw := cmd.ErrOrStderr()
+			if migrated, from, to, err := config.MigrateLegacy(); err != nil {
+				fmt.Fprintf(errw, "aviso: no se pudo migrar la config legacy: %v\n", err)
+			} else if migrated {
+				fmt.Fprintf(errw, "config migrada: %s → %s (revisá los permisos del archivo)\n", from, to)
+			}
+			resolved, err := config.Resolve(cmd.Root().PersistentFlags())
+			if err != nil {
+				return err
+			}
+			*cfg = *resolved
+			return nil
+		},
 	}
 
-	root.AddCommand(newVersionCmd())
+	pf := root.PersistentFlags()
+	pf.String("config", "", "ruta del archivo de config (default ~/.conduit/config.toml)")
+	pf.String("backend", "", "backend de storage (p.ej. sftp)")
+	pf.String("log-file", "", "ruta del log (default ~/.conduit/conduit.log)")
+	pf.Bool("verbose", false, "también enviar mensajes Info a stderr")
+	pf.Bool("insecure-host-key", false, "DESHABILITA la verificación de host key SSH (INSEGURO; solo legacy)")
 
-	deps := buildDeps()
+	root.AddCommand(newVersionCmd())
+	root.AddCommand(newFeaturesCmd())
 	for _, f := range feature.All() {
 		root.AddCommand(f.NewCommand(deps))
 	}
-
-	return root.Execute()
+	return root
 }
 
-// buildDeps assembles the shared dependencies handed to every feature.
-// The real log sink is opened by a feature when it actually runs (Step
-// 4/5) so read-only commands (version/help) don't create ~/.conduit.
-func buildDeps() feature.Deps {
-	cfg, err := config.LoadDefault()
-	if err != nil {
-		cfg, _ = config.Load("") // fall back to built-in defaults
-	}
-	return feature.Deps{
-		Config:  cfg,
-		Storage: storage.New, // registry factory; selects backend by cfg
-		Log:     logx.New(nil),
+// newFeaturesCmd lists the registered plugins (core command, not a plugin).
+func newFeaturesCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "features",
+		Short: "Lista las funcionalidades (plugins) disponibles",
+		Args:  cobra.NoArgs,
+		// Read-only: skip the root PersistentPreRunE (no legacy migration
+		// nor config resolution side-effects for an informational command).
+		PersistentPreRunE: func(*cobra.Command, []string) error { return nil },
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			w := tabwriter.NewWriter(cmd.OutOrStdout(), 0, 0, 2, ' ', 0)
+			for _, f := range feature.All() {
+				fmt.Fprintf(w, "%s\t%s\n", f.Name(), f.Synopsis())
+			}
+			return w.Flush()
+		},
 	}
 }
