@@ -1,0 +1,9 @@
+# Normaliza saltos de línea: el repo guarda LF; evita que ediciones en
+# Windows introduzcan CRLF y rompan `gofmt -l` en la CI de Linux.
+* text=auto eol=lf
+*.go text eol=lf
+go.mod text eol=lf
+go.sum text eol=lf
+*.yml text eol=lf
+*.md text eol=lf
+*.exe binary
