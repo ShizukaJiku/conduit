@@ -7,6 +7,7 @@ package download
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -90,30 +91,39 @@ func downloadNeeded(local *localInfo, remote storage.FileInfo) bool {
 }
 
 // FullSync downloads new/changed remote files. It is additive: a local
-// file with no remote counterpart is left untouched.
+// file with no remote counterpart is left untouched. Per-file errors are
+// logged and skipped (parity with sftp_download.py's log-and-continue);
+// only a List failure (connection-level) aborts and triggers a reconnect.
 func (e *Engine) FullSync() error {
 	remoteFiles, _, err := e.store.List()
 	if err != nil {
-		return err
+		return fmt.Errorf("download: list: %w", err)
 	}
 	for _, rf := range remoteFiles {
 		if isTransient(rf.Path) {
 			continue // §2.3 — half-uploaded files (known limitation)
 		}
 		abs := filepath.Join(e.local, filepath.FromSlash(rf.Path))
+		// LOW-1: a local directory where a remote file lives can never be
+		// satisfied by Get; log once per pass and skip instead of looping.
+		if fi, serr := os.Stat(abs); serr == nil && fi.IsDir() {
+			e.log.Errorf("download: %s is a local directory, skipping", rf.Path)
+			continue
+		}
 		if !downloadNeeded(statLocal(abs), rf) {
 			continue
 		}
 		mt, err := e.store.Get(rf.Path, abs)
 		if err != nil {
-			e.log.Errorf("get %s: %v", rf.Path, err)
-			return err // connection-level failure → caller reconnects
+			// Per-file failure: log and continue (additive, no abort).
+			e.log.Errorf("download: get %s: %v", rf.Path, err)
+			continue
 		}
 		// Preserve the remote mtime locally so the next pass sees delta 0
 		// (no re-download loop). mtime is whole seconds.
 		t := time.Unix(mt, 0)
 		if cerr := os.Chtimes(abs, t, t); cerr != nil {
-			e.log.Errorf("chtimes %s: %v", rf.Path, cerr)
+			e.log.Errorf("download: chtimes %s: %v", rf.Path, cerr)
 		}
 		e.log.Infof("downloaded %s", rf.Path)
 	}
@@ -135,7 +145,7 @@ func (e *Engine) reconnect(ctx context.Context) error {
 // Run executes the PARITY.md §2.1 lifecycle and blocks until ctx is done.
 func (e *Engine) Run(ctx context.Context) error {
 	if err := os.MkdirAll(e.local, 0o755); err != nil {
-		return err
+		return fmt.Errorf("download: mkdir %s: %w", e.local, err)
 	}
 	if err := e.store.Connect(ctx); err != nil {
 		return err
@@ -144,7 +154,9 @@ func (e *Engine) Run(ctx context.Context) error {
 
 	if err := e.FullSync(); err != nil {
 		if rerr := e.reconnect(ctx); rerr == nil {
-			_ = e.FullSync()
+			if serr := e.FullSync(); serr != nil {
+				e.log.Errorf("download: post-reconnect sync: %v", serr)
+			}
 		}
 	}
 
@@ -156,7 +168,9 @@ func (e *Engine) Run(ctx context.Context) error {
 		case <-tick:
 			if err := e.FullSync(); err != nil {
 				if rerr := e.reconnect(ctx); rerr == nil {
-					_ = e.FullSync()
+					if serr := e.FullSync(); serr != nil {
+						e.log.Errorf("download: post-reconnect sync: %v", serr)
+					}
 				}
 			}
 			tick = e.clk.After(e.interval())

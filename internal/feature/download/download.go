@@ -60,6 +60,8 @@ func run(parent context.Context, d feature.Deps) error {
 		} else {
 			log.Warnf("download: no se pudo abrir el log %s (sigo sin log en disco): %v", lp, oerr)
 		}
+	} else {
+		log.Warnf("download: no se pudo resolver la ruta de log (sigo sin log en disco): %v", err)
 	}
 
 	store, err := d.Storage(d.Config)

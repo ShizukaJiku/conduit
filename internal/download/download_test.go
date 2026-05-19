@@ -194,6 +194,7 @@ type hookStore struct {
 	connectErr error
 	listErr    error
 	getErr     error
+	getErrFor  string // if set, getErr applies only to this rel
 	connects   atomic.Int32
 	listCalls  atomic.Int32
 	failFirst  bool // listErr only on the first List call
@@ -214,7 +215,7 @@ func (h *hookStore) List() ([]storage.FileInfo, []string, error) {
 	return h.Storage.List()
 }
 func (h *hookStore) Get(rel, local string) (int64, error) {
-	if h.getErr != nil {
+	if h.getErr != nil && (h.getErrFor == "" || h.getErrFor == rel) {
 		return 0, h.getErr
 	}
 	return h.Storage.Get(rel, local)
@@ -258,11 +259,65 @@ func TestFullSyncListAndGetErrors(t *testing.T) {
 		t.Error("FullSync must propagate List error")
 	}
 
+	// A per-file Get error is logged and skipped (parity: log-and-continue),
+	// NOT propagated — FullSync returns nil and the file stays absent.
 	hg := &hookStore{Storage: memfs.NewClocked(func() time.Time { return epoch }), getErr: errBoom}
 	_ = hg.Connect(context.Background())
 	seedRemote(t, hg.Storage, "a.txt", "x")
-	if err := New(hg, t.TempDir(), 0, nil, clock.NewFake()).FullSync(); err == nil {
-		t.Error("FullSync must propagate Get error")
+	local := t.TempDir()
+	if err := New(hg, local, 0, nil, clock.NewFake()).FullSync(); err != nil {
+		t.Errorf("per-file Get error must NOT abort FullSync, got %v", err)
+	}
+	if _, serr := os.Stat(filepath.Join(local, "a.txt")); serr == nil {
+		t.Error("file with Get error must not be created locally")
+	}
+}
+
+func TestFullSyncPerFileErrorContinues(t *testing.T) {
+	local := t.TempDir()
+	h := &hookStore{
+		Storage:   memfs.NewClocked(func() time.Time { return epoch }),
+		getErr:    errBoom,
+		getErrFor: "b.txt", // only b.txt fails
+	}
+	_ = h.Connect(context.Background())
+	seedRemote(t, h.Storage, "a.txt", "good-a")
+	seedRemote(t, h.Storage, "b.txt", "bad-b")
+	seedRemote(t, h.Storage, "c.txt", "good-c")
+
+	if err := New(h, local, 0, nil, clock.NewFake()).FullSync(); err != nil {
+		t.Fatalf("FullSync must not abort on a per-file error: %v", err)
+	}
+	if b, _ := os.ReadFile(filepath.Join(local, "a.txt")); string(b) != "good-a" {
+		t.Errorf("a.txt (before bad file) must download: %q", b)
+	}
+	if _, err := os.Stat(filepath.Join(local, "b.txt")); err == nil {
+		t.Error("b.txt (errored) must be absent")
+	}
+	if b, _ := os.ReadFile(filepath.Join(local, "c.txt")); string(b) != "good-c" {
+		t.Errorf("c.txt (after bad file) must STILL download (log-and-continue): %q", b)
+	}
+}
+
+func TestFullSyncSkipsLocalDirCollision(t *testing.T) {
+	local := t.TempDir()
+	// A local directory occupies the path of a remote file.
+	if err := os.MkdirAll(filepath.Join(local, "clash"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	s := connectedMemfs(t, func() time.Time { return epoch })
+	seedRemote(t, s, "clash", "remote-data")
+	seedRemote(t, s, "fine.txt", "ok")
+
+	if err := New(s, local, 0, nil, clock.NewFake()).FullSync(); err != nil {
+		t.Fatalf("dir collision must not abort FullSync: %v", err)
+	}
+	fi, _ := os.Stat(filepath.Join(local, "clash"))
+	if fi == nil || !fi.IsDir() {
+		t.Error("local directory 'clash' must be left intact")
+	}
+	if b, _ := os.ReadFile(filepath.Join(local, "fine.txt")); string(b) != "ok" {
+		t.Errorf("other files still download despite a collision: %q", b)
 	}
 }
 
