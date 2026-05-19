@@ -99,7 +99,7 @@ func TestNestedExistingTreeIsWatched(t *testing.T) {
 	waitFor(t, w, func(e Event) bool { return e.Path == f && e.Op == Created })
 }
 
-func TestCloseClosesEvents(t *testing.T) {
+func TestCloseSignalsDone(t *testing.T) {
 	w, err := New(t.TempDir(), clock.System{})
 	if err != nil {
 		t.Fatal(err)
@@ -110,17 +110,14 @@ func TestCloseClosesEvents(t *testing.T) {
 	if err := w.Close(); err != nil {
 		t.Fatalf("Close: %v", err)
 	}
-	// Draining must terminate (channel closed), not block forever.
-	deadline := time.After(3 * time.Second)
-	for {
-		select {
-		case _, ok := <-w.Events():
-			if !ok {
-				return // closed — success
-			}
-		case <-deadline:
-			t.Fatal("events channel did not close after Close()")
-		}
+	select {
+	case <-w.Done():
+	case <-time.After(3 * time.Second):
+		t.Fatal("Done() not closed after Close()")
+	}
+	// Close is idempotent (no double-close panic on w.done).
+	if err := w.Close(); err != nil {
+		t.Fatalf("second Close: %v", err)
 	}
 }
 

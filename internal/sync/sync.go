@@ -257,6 +257,8 @@ func (e *Engine) Run(ctx context.Context) error {
 		select {
 		case <-ctx.Done():
 			return nil
+		case <-w.Done():
+			return nil // watcher stopped (fatal fsnotify error)
 		case <-keepalive:
 			if err := e.store.Ping(); err != nil {
 				e.log.Errorf("keepalive: %v", err)
@@ -265,15 +267,9 @@ func (e *Engine) Run(ctx context.Context) error {
 				}
 			}
 			keepalive = e.clk.After(e.keepEvery)
-		case ev, ok := <-w.Events():
-			if !ok {
-				return nil
-			}
+		case ev := <-w.Events():
 			e.applyEvent(w, ev)
-		case werr, ok := <-w.Errors():
-			if !ok {
-				continue
-			}
+		case werr := <-w.Errors():
 			e.log.Errorf("watcher: %v", werr)
 		}
 	}

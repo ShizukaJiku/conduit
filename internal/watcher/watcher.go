@@ -82,11 +82,17 @@ func New(root string, clk clock.Clock) (*Watcher, error) {
 }
 
 // Events streams file changes. Modified/Created files should be uploaded;
-// Deleted files removed remotely.
+// Deleted files removed remotely. The channel is never closed (closing it
+// would race a concurrent emit); use Done to detect shutdown.
 func (w *Watcher) Events() <-chan Event { return w.events }
 
 // Errors streams non-fatal watcher errors.
 func (w *Watcher) Errors() <-chan error { return w.errs }
+
+// Done is closed when the watcher stops (Close or a fatal fsnotify error).
+func (w *Watcher) Done() <-chan struct{} { return w.done }
+
+func (w *Watcher) stop() { w.closeOnce.Do(func() { close(w.done) }) }
 
 // Start adds watches for the whole tree and begins streaming events.
 func (w *Watcher) Start() error {
@@ -97,10 +103,10 @@ func (w *Watcher) Start() error {
 	return nil
 }
 
-// Close stops watching and closes the channels.
+// Close stops watching. Idempotent; safe to call concurrently.
 func (w *Watcher) Close() error {
 	err := w.fsw.Close() // unblocks loop (fsnotify channels close)
-	w.closeOnce.Do(func() { close(w.done) })
+	w.stop()
 	return err
 }
 
@@ -153,7 +159,9 @@ func (w *Watcher) emitErr(err error) {
 }
 
 func (w *Watcher) loop() {
-	defer close(w.events)
+	// w.events is intentionally NOT closed: a concurrent emit racing a
+	// close would panic. Shutdown is signalled via w.done (stop()).
+	defer w.stop()
 	for {
 		select {
 		case <-w.done:
@@ -165,7 +173,7 @@ func (w *Watcher) loop() {
 			w.emitErr(err)
 		case ev, ok := <-w.fsw.Events:
 			if !ok {
-				return
+				return // fatal: fsnotify closed → defer w.stop() signals
 			}
 			w.handle(ev)
 		}
