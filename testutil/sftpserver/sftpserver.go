@@ -1,22 +1,29 @@
 // Package sftpserver is an in-process SSH+SFTP server for hermetic tests
-// (no Docker). It serves a temp directory over the real filesystem with
-// password auth and an ephemeral host key.
+// (no Docker). It serves a temp directory with password auth and an
+// ephemeral host key.
+//
+// Note: pkg/sftp's Server is not a chroot. WithServerWorkingDirectory
+// scopes *relative* paths to the temp root; absolute paths are still
+// honored (tests use the absolute temp path). This is test-only code.
 package sftpserver
 
 import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"net"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/pkg/sftp"
 	"golang.org/x/crypto/ssh"
 )
 
-// Server is a running test SFTP server. Stop is registered with t.Cleanup.
+// Server is a running test SFTP server. Shutdown is registered with
+// t.Cleanup: it closes the listener and waits for in-flight connections.
 type Server struct {
 	Addr    string        // host:port, e.g. 127.0.0.1:54321
-	Root    string        // absolute temp dir served (forward-slashed by callers)
+	Root    string        // absolute temp dir served
 	User    string        // accepted username
 	Pass    string        // accepted password
 	HostKey ssh.PublicKey // for building a known_hosts entry
@@ -59,8 +66,18 @@ func Start(t *testing.T) *Server {
 		HostKey: signer.PublicKey(),
 	}
 
-	go acceptLoop(ln, cfg)
-	t.Cleanup(func() { _ = ln.Close() })
+	var wg sync.WaitGroup
+	go acceptLoop(ln, cfg, s.Root, &wg)
+
+	t.Cleanup(func() {
+		_ = ln.Close()
+		done := make(chan struct{})
+		go func() { wg.Wait(); close(done) }()
+		select {
+		case <-done:
+		case <-time.After(2 * time.Second): // never hang a test on a stuck conn
+		}
+	})
 	return s
 }
 
@@ -70,17 +87,21 @@ type authError struct{}
 
 func (*authError) Error() string { return "sftpserver: auth failed" }
 
-func acceptLoop(ln net.Listener, cfg *ssh.ServerConfig) {
+func acceptLoop(ln net.Listener, cfg *ssh.ServerConfig, root string, wg *sync.WaitGroup) {
 	for {
 		nConn, err := ln.Accept()
 		if err != nil {
 			return // listener closed → shutdown
 		}
-		go handleConn(nConn, cfg)
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			handleConn(nConn, cfg, root)
+		}()
 	}
 }
 
-func handleConn(nConn net.Conn, cfg *ssh.ServerConfig) {
+func handleConn(nConn net.Conn, cfg *ssh.ServerConfig, root string) {
 	conn, chans, reqs, err := ssh.NewServerConn(nConn, cfg)
 	if err != nil {
 		return
@@ -105,7 +126,7 @@ func handleConn(nConn net.Conn, cfg *ssh.ServerConfig) {
 			}
 		}(requests)
 
-		srv, err := sftp.NewServer(ch)
+		srv, err := sftp.NewServer(ch, sftp.WithServerWorkingDirectory(root))
 		if err != nil {
 			_ = ch.Close()
 			continue

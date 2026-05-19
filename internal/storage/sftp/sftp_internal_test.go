@@ -10,7 +10,8 @@ func TestRemotePathBuilding(t *testing.T) {
 		{"/srv/data", "d/sub/b.txt", "/srv/data/d/sub/b.txt"},
 		{"/srv/data", "", "/srv/data"},
 		{"/srv/data", "../escape", "/srv/data/escape"}, // cleanRel strips traversal
-		{"", "a.txt", "./a.txt"},                       // empty root → "."
+		{"", "a.txt", "a.txt"},                         // empty root → relative
+		{"", "d/sub/b.txt", "d/sub/b.txt"},
 		{"", "", "."},
 	}
 	for _, c := range cases {

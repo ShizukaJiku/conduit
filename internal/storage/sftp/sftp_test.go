@@ -32,8 +32,10 @@ func hostPort(t *testing.T, addr string) (string, int) {
 
 func newCfg(t *testing.T, srv *sftpserver.Server, insecure bool, knownHosts string) *config.Config {
 	host, port := hostPort(t, srv.Addr)
+	// Empty RemoteFolder → driver uses paths relative to the server's
+	// working directory, which sftpserver scopes to srv.Root (sandbox).
 	return &config.Config{
-		RemoteFolder: filepath.ToSlash(srv.Root),
+		RemoteFolder: "",
 		Backend: config.Backend{
 			Type: "sftp",
 			SFTP: config.SFTPConfig{

@@ -12,6 +12,7 @@ import (
 	"context"
 	"fmt"
 	"sort"
+	"sync"
 
 	"github.com/ShizukaJiku/conduit/internal/config"
 )
@@ -46,10 +47,14 @@ type Constructor func(cfg *config.Config) (Storage, error)
 // Factory is the dependency handed to features (see internal/feature.Deps).
 type Factory = Constructor
 
-var drivers = map[string]Constructor{}
+var (
+	driversMu sync.RWMutex
+	drivers   = map[string]Constructor{}
+)
 
 // Register adds a driver under name. Panics on empty or duplicate name so
-// collisions fail at process start, not silently at runtime.
+// collisions fail at process start, not silently at runtime. Guarded so a
+// concurrent Register/New is not a data race (database/sql pattern).
 func Register(name string, c Constructor) {
 	if name == "" {
 		panic("storage: Register with empty name")
@@ -57,6 +62,8 @@ func Register(name string, c Constructor) {
 	if c == nil {
 		panic("storage: Register " + name + " with nil constructor")
 	}
+	driversMu.Lock()
+	defer driversMu.Unlock()
 	if _, dup := drivers[name]; dup {
 		panic("storage: duplicate driver " + name)
 	}
@@ -65,6 +72,8 @@ func Register(name string, c Constructor) {
 
 // Drivers returns the registered driver names, sorted.
 func Drivers() []string {
+	driversMu.RLock()
+	defer driversMu.RUnlock()
 	out := make([]string, 0, len(drivers))
 	for n := range drivers {
 		out = append(out, n)
@@ -79,9 +88,11 @@ func New(cfg *config.Config) (Storage, error) {
 	if name == "" {
 		name = "sftp"
 	}
+	driversMu.RLock()
 	c, ok := drivers[name]
+	driversMu.RUnlock()
 	if !ok {
-		return nil, fmt.Errorf("storage: backend %q no registrado (disponibles: %v)", name, Drivers())
+		return nil, fmt.Errorf("storage: backend %q not registered (available: %v)", name, Drivers())
 	}
 	return c(cfg)
 }
