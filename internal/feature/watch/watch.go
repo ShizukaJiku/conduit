@@ -14,7 +14,6 @@ import (
 
 	"github.com/ShizukaJiku/conduit/internal/clock"
 	"github.com/ShizukaJiku/conduit/internal/feature"
-	"github.com/ShizukaJiku/conduit/internal/logx"
 	syncengine "github.com/ShizukaJiku/conduit/internal/sync"
 )
 
@@ -52,17 +51,9 @@ func run(parent context.Context, d feature.Deps) error {
 	ctx, stop := signal.NotifyContext(parent, syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	// Open the real log sink only now that a long-running command runs, so
-	// read-only commands never create ~/.conduit.
-	log := d.Log
-	if lp, err := logx.DefaultPath(); err == nil {
-		if lg, closer, oerr := logx.Open(lp); oerr == nil {
-			log = lg
-			defer closer.Close()
-		} else {
-			log.Warnf("watch: no se pudo abrir el log %s (sigo sin log en disco): %v", lp, oerr)
-		}
-	}
+	log, closeLog := d.OpenLog()
+	defer closeLog()
+	d.WarnSecurity(log)
 
 	store, err := d.Storage(d.Config)
 	if err != nil {

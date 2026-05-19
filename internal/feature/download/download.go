@@ -15,7 +15,6 @@ import (
 	"github.com/ShizukaJiku/conduit/internal/clock"
 	dlengine "github.com/ShizukaJiku/conduit/internal/download"
 	"github.com/ShizukaJiku/conduit/internal/feature"
-	"github.com/ShizukaJiku/conduit/internal/logx"
 )
 
 type plugin struct{}
@@ -52,17 +51,9 @@ func run(parent context.Context, d feature.Deps) error {
 	ctx, stop := signal.NotifyContext(parent, syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	log := d.Log
-	if lp, err := logx.DefaultPath(); err == nil {
-		if lg, closer, oerr := logx.Open(lp); oerr == nil {
-			log = lg
-			defer closer.Close()
-		} else {
-			log.Warnf("download: no se pudo abrir el log %s (sigo sin log en disco): %v", lp, oerr)
-		}
-	} else {
-		log.Warnf("download: no se pudo resolver la ruta de log (sigo sin log en disco): %v", err)
-	}
+	log, closeLog := d.OpenLog()
+	defer closeLog()
+	d.WarnSecurity(log)
 
 	store, err := d.Storage(d.Config)
 	if err != nil {

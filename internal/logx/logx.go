@@ -1,5 +1,7 @@
-// Package logx is conduit's logging facade: append to a file and tee to
-// stderr, with a fixed text format "ts [LEVEL] msg".
+// Package logx is conduit's logging facade: a fixed text format
+// "ts [LEVEL] msg" fanned out to one or more sinks, each with a minimum
+// level. The file sink always gets everything; the stderr sink only gets
+// Info when --verbose is set (Warn/Error always reach stderr).
 package logx
 
 import (
@@ -11,27 +13,43 @@ import (
 	"time"
 )
 
-type level string
+type level int
 
 const (
-	lvlInfo  level = "INFO"
-	lvlWarn  level = "WARN"
-	lvlError level = "ERROR"
+	levelInfo level = iota
+	levelWarn
+	levelError
 )
+
+func (l level) tag() string {
+	switch l {
+	case levelInfo:
+		return "INFO"
+	case levelWarn:
+		return "WARN"
+	default:
+		return "ERROR"
+	}
+}
+
+type sink struct {
+	w   io.Writer
+	min level
+}
 
 // Logger is safe for concurrent use.
 type Logger struct {
-	mu  sync.Mutex
-	w   io.Writer
-	now func() time.Time // injectable for tests
+	mu    sync.Mutex
+	sinks []sink
+	now   func() time.Time // injectable for tests
 }
 
-// New builds a Logger writing to w. A nil writer discards output.
+// New builds a Logger writing every level to w. A nil writer discards.
 func New(w io.Writer) *Logger {
 	if w == nil {
 		w = io.Discard
 	}
-	return &Logger{w: w, now: time.Now}
+	return &Logger{sinks: []sink{{w, levelInfo}}, now: time.Now}
 }
 
 // DefaultPath is ~/.conduit/conduit.log.
@@ -43,9 +61,13 @@ func DefaultPath() (string, error) {
 	return filepath.Join(home, ".conduit", "conduit.log"), nil
 }
 
-// Open opens path in append mode (creating parent dirs) and tees output to
-// stderr. The returned closer closes the underlying file.
-func Open(path string) (*Logger, io.Closer, error) {
+// Open is OpenLeveled(path, true) — every level to file and stderr.
+func Open(path string) (*Logger, io.Closer, error) { return OpenLeveled(path, true) }
+
+// OpenLeveled appends to path (creating parent dirs) and tees to stderr.
+// The file always receives every level; stderr receives Info only when
+// verbose, but Warn/Error always.
+func OpenLeveled(path string, verbose bool) (*Logger, io.Closer, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return nil, nil, fmt.Errorf("logx: mkdir: %w", err)
 	}
@@ -53,20 +75,32 @@ func Open(path string) (*Logger, io.Closer, error) {
 	if err != nil {
 		return nil, nil, fmt.Errorf("logx: open %s: %w", path, err)
 	}
-	return &Logger{w: io.MultiWriter(f, os.Stderr), now: time.Now}, f, nil
+	stderrMin := levelWarn
+	if verbose {
+		stderrMin = levelInfo
+	}
+	lg := &Logger{
+		sinks: []sink{{f, levelInfo}, {os.Stderr, stderrMin}},
+		now:   time.Now,
+	}
+	return lg, f, nil
 }
 
 func (l *Logger) logf(lv level, format string, args ...any) {
-	if l == nil || l.w == nil {
+	if l == nil || len(l.sinks) == 0 {
 		return
 	}
 	line := fmt.Sprintf("%s [%s] %s\n",
-		l.now().Format("2006-01-02 15:04:05"), lv, fmt.Sprintf(format, args...))
+		l.now().Format("2006-01-02 15:04:05"), lv.tag(), fmt.Sprintf(format, args...))
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	_, _ = io.WriteString(l.w, line)
+	for _, s := range l.sinks {
+		if lv >= s.min {
+			_, _ = io.WriteString(s.w, line)
+		}
+	}
 }
 
-func (l *Logger) Infof(format string, args ...any)  { l.logf(lvlInfo, format, args...) }
-func (l *Logger) Warnf(format string, args ...any)  { l.logf(lvlWarn, format, args...) }
-func (l *Logger) Errorf(format string, args ...any) { l.logf(lvlError, format, args...) }
+func (l *Logger) Infof(format string, args ...any)  { l.logf(levelInfo, format, args...) }
+func (l *Logger) Warnf(format string, args ...any)  { l.logf(levelWarn, format, args...) }
+func (l *Logger) Errorf(format string, args ...any) { l.logf(levelError, format, args...) }

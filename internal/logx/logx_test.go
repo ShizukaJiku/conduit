@@ -48,6 +48,44 @@ func TestOpenBadPath(t *testing.T) {
 	}
 }
 
+func TestLevelRouting(t *testing.T) {
+	var fileBuf, errBuf bytes.Buffer
+	// Mirrors OpenLeveled(_, verbose=false): file gets all, stderr Warn+.
+	l := &Logger{
+		sinks: []sink{{&fileBuf, levelInfo}, {&errBuf, levelWarn}},
+		now:   func() time.Time { return time.Unix(0, 0).UTC() },
+	}
+	l.Infof("info-line")
+	l.Warnf("warn-line")
+	l.Errorf("err-line")
+
+	fileOut, errOut := fileBuf.String(), errBuf.String()
+	if !strings.Contains(fileOut, "info-line") || !strings.Contains(fileOut, "warn-line") || !strings.Contains(fileOut, "err-line") {
+		t.Errorf("file sink must receive every level, got: %q", fileOut)
+	}
+	if strings.Contains(errOut, "info-line") {
+		t.Error("non-verbose stderr must NOT receive Info")
+	}
+	if !strings.Contains(errOut, "warn-line") || !strings.Contains(errOut, "err-line") {
+		t.Errorf("stderr must always receive Warn/Error, got: %q", errOut)
+	}
+}
+
+func TestOpenLeveledVerboseFalse(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "c.log")
+	l, c, err := OpenLeveled(p, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	l.Infof("to-file-only")
+	l.Errorf("to-both")
+	_ = c.Close()
+	b, _ := os.ReadFile(p)
+	if !strings.Contains(string(b), "to-file-only") || !strings.Contains(string(b), "to-both") {
+		t.Errorf("file must contain all levels: %q", b)
+	}
+}
+
 func TestNilWriterSafe(t *testing.T) {
 	New(nil).Infof("must not panic")
 	var l *Logger
