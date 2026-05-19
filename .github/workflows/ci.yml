@@ -36,3 +36,6 @@ jobs:
 
       - name: test
         run: go test ./... -race -cover
+
+      - name: e2e
+        run: go test -tags e2e ./testutil/e2e/... -race -count=1
