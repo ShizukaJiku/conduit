@@ -1,12 +1,18 @@
-// Package storage defines conduit's backend-agnostic Storage contract.
-// Engines (sync/download) operate only against this interface; concrete
-// drivers (memfs, sftp, s3) are implemented in later steps. Atomicity of
-// Put/Get, host-key verification and "directory" semantics are driver
-// implementation details, never exposed here.
+// Package storage defines conduit's backend-agnostic Storage contract and
+// a driver registry. Engines (sync/download) operate only against the
+// Storage interface; concrete drivers (memfs, sftp, s3) self-register from
+// their package init() — the database/sql pattern, which also breaks the
+// import cycle (storage ← driver, never storage → driver).
+//
+// Atomicity of Put/Get, host-key verification and "directory" semantics
+// are driver implementation details, never exposed by this interface.
 package storage
 
 import (
 	"context"
+	"fmt"
+	"sort"
+	"sync"
 
 	"github.com/ShizukaJiku/conduit/internal/config"
 )
@@ -35,6 +41,58 @@ type Storage interface {
 	RemoveDir(remoteRel string) error // object stores: no-op
 }
 
-// Factory builds a Storage for the configured backend. The concrete
-// selection (sftp/s3/...) is implemented in the storage-core step.
-type Factory func(cfg *config.Config) (Storage, error)
+// Constructor builds a Storage for the given resolved config.
+type Constructor func(cfg *config.Config) (Storage, error)
+
+// Factory is the dependency handed to features (see internal/feature.Deps).
+type Factory = Constructor
+
+var (
+	driversMu sync.RWMutex
+	drivers   = map[string]Constructor{}
+)
+
+// Register adds a driver under name. Panics on empty or duplicate name so
+// collisions fail at process start, not silently at runtime. Guarded so a
+// concurrent Register/New is not a data race (database/sql pattern).
+func Register(name string, c Constructor) {
+	if name == "" {
+		panic("storage: Register with empty name")
+	}
+	if c == nil {
+		panic("storage: Register " + name + " with nil constructor")
+	}
+	driversMu.Lock()
+	defer driversMu.Unlock()
+	if _, dup := drivers[name]; dup {
+		panic("storage: duplicate driver " + name)
+	}
+	drivers[name] = c
+}
+
+// Drivers returns the registered driver names, sorted.
+func Drivers() []string {
+	driversMu.RLock()
+	defer driversMu.RUnlock()
+	out := make([]string, 0, len(drivers))
+	for n := range drivers {
+		out = append(out, n)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// New builds the Storage selected by cfg.Backend.Type (default "sftp").
+func New(cfg *config.Config) (Storage, error) {
+	name := cfg.Backend.Type
+	if name == "" {
+		name = "sftp"
+	}
+	driversMu.RLock()
+	c, ok := drivers[name]
+	driversMu.RUnlock()
+	if !ok {
+		return nil, fmt.Errorf("storage: backend %q not registered (available: %v)", name, Drivers())
+	}
+	return c(cfg)
+}

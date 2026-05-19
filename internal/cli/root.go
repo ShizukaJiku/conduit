@@ -9,6 +9,7 @@ import (
 	"github.com/ShizukaJiku/conduit/internal/config"
 	"github.com/ShizukaJiku/conduit/internal/feature"
 	"github.com/ShizukaJiku/conduit/internal/logx"
+	"github.com/ShizukaJiku/conduit/internal/storage"
 )
 
 // Execute builds and runs the root command.
@@ -31,13 +32,16 @@ func Execute() error {
 }
 
 // buildDeps assembles the shared dependencies handed to every feature.
-// Config/Storage/logging are fleshed out in later steps; for now this
-// produces safe, minimal values so the SPI is stable.
+// The real log sink is opened by a feature when it actually runs (Step
+// 4/5) so read-only commands (version/help) don't create ~/.conduit.
 func buildDeps() feature.Deps {
-	cfg, _ := config.Load()
+	cfg, err := config.LoadDefault()
+	if err != nil {
+		cfg, _ = config.Load("") // fall back to built-in defaults
+	}
 	return feature.Deps{
 		Config:  cfg,
-		Storage: nil, // wired in the storage-core step
+		Storage: storage.New, // registry factory; selects backend by cfg
 		Log:     logx.New(nil),
 	}
 }
