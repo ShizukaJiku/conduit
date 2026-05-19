@@ -30,6 +30,16 @@ func New(_ *config.Config) (storage.Storage, error) {
 	}, nil
 }
 
+// NewClocked is a test/reference helper: a memfs whose Put timestamps come
+// from now, so parity tests can pin remote mtimes deterministically.
+func NewClocked(now func() time.Time) storage.Storage {
+	return &store{
+		files: map[string]entry{},
+		dirs:  map[string]bool{},
+		now:   now,
+	}
+}
+
 type entry struct {
 	data  []byte
 	mtime int64 // unix seconds
