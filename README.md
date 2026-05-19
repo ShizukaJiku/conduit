@@ -74,11 +74,54 @@ Se imprime un aviso con las rutas.
 
 ## Instalación (Scoop)
 
-> Disponible al completar el step de release.
+Disponible tras el primer release etiquetado (`v0.1.0`):
 
 ```powershell
 scoop bucket add shizuka https://github.com/ShizukaJiku/scoop-bucket
 scoop install conduit
+conduit version
+```
+
+El manifest (`bucket/conduit.json`) lo genera y publica GoReleaser en cada
+release; `scoop update conduit` trae la última versión.
+
+## Release (mantenedor)
+
+Disparado por un tag `v*` (`.github/workflows/release.yml` → GoReleaser):
+
+```powershell
+git tag v0.1.0
+git push origin v0.1.0
+```
+
+Requiere el secret `SCOOP_BUCKET_TOKEN` en el repo (PAT fine-grained con
+`Contents: Read and write` **solo** sobre `ShizukaJiku/scoop-bucket`).
+Usá **expiración corta** y rotalo periódicamente; el workflow valida que
+exista (fail-fast) *antes* de publicar el Release. Validar localmente sin
+publicar:
+
+```powershell
+goreleaser check
+goreleaser release --snapshot --clean
+```
+
+`conduit` **no usa `checkver`/`autoupdate`** por diseño: GoReleaser
+regenera y pushea el manifest en cada release, así que `scoop update
+conduit` siempre trae la última versión.
+
+### Recuperación ante fallo parcial del release
+
+GoReleaser publica el GitHub Release y *luego* pushea el manifest al
+bucket. Si el job falla **después** de crear el Release (p.ej. el PAT
+perdió permiso a mitad), el Release queda publicado pero el bucket
+desactualizado. Para recuperar:
+
+```powershell
+gh release delete vX.Y.Z --repo ShizukaJiku/conduit --yes
+git push origin :refs/tags/vX.Y.Z   # borrar el tag remoto
+git tag -d vX.Y.Z
+# corregir el secret/PAT, luego recrear el tag
+git tag vX.Y.Z && git push origin vX.Y.Z
 ```
 
 ## Build desde fuente

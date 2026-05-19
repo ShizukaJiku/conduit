@@ -1,0 +1,75 @@
+# GoReleaser v2 — conduit
+# Valida: goreleaser check
+# Dry-run:  goreleaser release --snapshot --clean
+#
+# Nota de convención: el bucket existente (bucket/sftp-sync.json) usa
+# checkver+autoupdate. GoReleaser regenera el manifest de Scoop en CADA
+# release (lo pushea al bucket), por lo que la actualización la maneja
+# GoReleaser, no el checkver de Scoop. El manifest generado conserva la
+# forma esencial (architecture 64bit, url con fragmento #/conduit.exe,
+# hash, bin), por eso no se emiten checkver/autoupdate (serían redundantes
+# y GoReleaser no los soporta).
+version: 2
+
+project_name: conduit
+
+before:
+  hooks:
+    - go mod tidy
+
+builds:
+  - id: conduit
+    main: ./cmd/conduit
+    binary: conduit
+    env:
+      - CGO_ENABLED=0
+    goos: [windows]
+    goarch: [amd64]
+    ldflags:
+      - -s -w
+      - -X github.com/ShizukaJiku/conduit/internal/cli.version={{ .Version }}
+      - -X github.com/ShizukaJiku/conduit/internal/cli.commit={{ .Commit }}
+      - -X github.com/ShizukaJiku/conduit/internal/cli.date={{ .Date }}
+
+archives:
+  # GoReleaser-scoop requiere un archive (no binary suelto). Scoop extrae
+  # el zip e instala conduit.exe. sftp-sync usa raw-.exe por ser otra
+  # toolchain; conduit usa el path estándar de GoReleaser, que además
+  # regenera el manifest en cada release.
+  - id: conduit
+    formats: [zip]
+    name_template: "conduit_{{ .Version }}_{{ .Os }}_{{ if eq .Arch \"amd64\" }}x64{{ else }}{{ .Arch }}{{ end }}"
+
+checksum:
+  name_template: "checksums.txt"
+  # GoReleaser embebe el sha256 directamente en el manifest de Scoop
+  # (campo "hash"), así que no se necesita un .sha256 por asset.
+
+changelog:
+  use: github
+  sort: asc
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
+      - "^chore:"
+
+scoops:
+  - repository:
+      owner: ShizukaJiku
+      name: scoop-bucket
+      branch: main
+      token: "{{ .Env.SCOOP_BUCKET_TOKEN }}"
+    directory: bucket
+    homepage: "https://github.com/ShizukaJiku/conduit"
+    description: "Sincronizador de carpetas multi-PC, headless y storage-agnóstico (watch/download)."
+    license: MIT
+    commit_author:
+      name: goreleaser-bot
+      email: bot@users.noreply.github.com
+    commit_msg_template: "conduit: actualizar a {{ .Tag }}"
+
+release:
+  github:
+    owner: ShizukaJiku
+    name: conduit

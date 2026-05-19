@@ -1,0 +1,11 @@
+version: 2
+updates:
+  # Mantiene los SHA pinneados de las GitHub Actions como PRs auditables.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+  - package-ecosystem: gomod
+    directory: /
+    schedule:
+      interval: weekly
