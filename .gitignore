@@ -1,0 +1,16 @@
+# Binaries
+/conduit
+/conduit.exe
+*.exe
+*.test
+
+# Build / coverage
+/dist/
+*.out
+coverage.txt
+
+# Editors / OS
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
