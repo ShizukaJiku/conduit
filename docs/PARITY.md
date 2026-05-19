@@ -17,7 +17,9 @@ no sobre SFTP.
   mtime local se **trunca a segundos** antes de comparar. Una diferencia
   sub-segundo es 0. Esto evita bucles de re-subida/re-descarga.
 - **`delta = remote_mtime_sec − local_mtime_sec`** (enteros). Es el eje de las
-  tablas.
+  tablas. Los engines DEBEN derivarlo vía `fixtures.SecondsBetween(remote,
+  local)` (trunca ambos a segundos) para que un jitter sub-segundo nunca
+  dispare un bucle de re-subida/re-descarga.
 - **Margen ±2 s, comparación estricta `<`** (heredado del Python: `+ 2 <`).
 - "size distinto" se evalúa solo si el archivo existe en ambos lados.
 
@@ -116,9 +118,14 @@ Tras `Get`, fijar el mtime local al `modTimeUnix` devuelto por `Storage.Get`
 
 ### 2.3 Filtro de archivos transitorios
 
-El engine **ignora** entradas remotas cuyo nombre termina en `.part` o `.tmp`
-(son archivos a medio subir del uploader). Filtro a nivel de engine, no del
-driver.
+El engine de `download` **ignora** entradas remotas cuyo nombre termina en
+`.part` o `.tmp` (archivos a medio subir del uploader), vía
+`fixtures.RemoteIgnored(name)`. Filtro a nivel de engine, no del driver.
+
+**Asimetría con `watch`:** `watch` **no** filtra estos sufijos — un `*.part`
+remoto huérfano (sin contraparte local) se poda como cualquier otro remoto
+(§1.2, fila "ausente/presente" → `Remove`). Modelado en las fixtures con el
+campo `Transient`.
 
 ---
 

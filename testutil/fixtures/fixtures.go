@@ -7,10 +7,15 @@
 // tables match the codified rules, so a divergence fails CI.
 //
 // Steps 4/5 import this package and assert their engine's decisions equal
-// ExpectedWatch / ExpectedDownload over FileCases (and the dir/event tables).
+// ExpectedWatch / ExpectedDownload over FileCases (and the dir/event
+// tables), and use SecondsBetween for the canonical mtime comparison.
 package fixtures
 
-import "sort"
+import (
+	"sort"
+	"strings"
+	"time"
+)
 
 // WatchAction is the decision of the local→remote (watch) engine for one file.
 type WatchAction string
@@ -30,22 +35,54 @@ const (
 	DownloadGet  DownloadAction = "get" // download remote → local
 )
 
+// IgnoredRemoteSuffixes are skipped by the download engine when scanning
+// the remote (transient uploader files). Known limitation: a
+// legitimately-named remote "x.part" is never downloaded (inherited from
+// Python, not fixed). The watch engine does NOT filter these — a stale
+// remote "*.part" with no local counterpart is pruned like any other.
+var IgnoredRemoteSuffixes = []string{".part", ".tmp"}
+
+// RemoteIgnored reports whether a remote entry name must be skipped by the
+// download engine. Engines MUST use this so behavior stays in lockstep
+// with the oracle.
+func RemoteIgnored(name string) bool {
+	for _, s := range IgnoredRemoteSuffixes {
+		if strings.HasSuffix(name, s) {
+			return true
+		}
+	}
+	return false
+}
+
+// SecondsBetween is the canonical mtime comparison: both times are
+// truncated to whole seconds (SFTP/object stores report seconds), then
+// subtracted. Returns remote_sec - local_sec. Engines MUST derive the
+// mtime delta through this so sub-second jitter can never cause a
+// re-upload/re-download loop.
+func SecondsBetween(remote, local time.Time) int {
+	return int(remote.Unix() - local.Unix())
+}
+
 // FileCase is one file's local/remote state and the expected decision of
 // each engine. MtimeDeltaSec is remote_mtime_sec - local_mtime_sec, in
-// whole seconds (mtimes are truncated to seconds before comparison).
+// whole seconds (mtimes are truncated to seconds before comparison;
+// see SecondsBetween). Transient marks a remote entry whose name ends in
+// an IgnoredRemoteSuffixes element.
 type FileCase struct {
 	Name          string
 	LocalPresent  bool
 	RemotePresent bool
 	SizeEqual     bool // only meaningful when both present
 	MtimeDeltaSec int  // remote - local, integer seconds
+	Transient     bool // remote entry name ends in .part/.tmp
 	Watch         WatchAction
 	Download      DownloadAction
 	Note          string
 }
 
 // ExpectedWatch is the codified watch rule (PARITY.md §1.2). Strict ±2s:
-// upload only when local is strictly newer by more than 2 seconds.
+// upload only when local is strictly newer by more than 2 seconds. Watch
+// does not filter transient names — it mirrors and prunes everything.
 func ExpectedWatch(c FileCase) WatchAction {
 	switch {
 	case c.LocalPresent && !c.RemotePresent:
@@ -61,10 +98,13 @@ func ExpectedWatch(c FileCase) WatchAction {
 	}
 }
 
-// ExpectedDownload is the codified download rule (PARITY.md §2.2). Additive:
-// never deletes local; download only when remote is strictly newer by >2s.
+// ExpectedDownload is the codified download rule (PARITY.md §2.2/§2.3).
+// Additive: never deletes local; ignores transient remote names; download
+// only when remote is strictly newer by >2s.
 func ExpectedDownload(c FileCase) DownloadAction {
 	switch {
+	case c.RemotePresent && c.Transient:
+		return DownloadNoop // §2.3 — .part/.tmp skipped (known limitation)
 	case !c.LocalPresent && c.RemotePresent:
 		return DownloadGet
 	case c.LocalPresent && c.RemotePresent && !c.SizeEqual:
@@ -87,7 +127,19 @@ var FileCases = []FileCase{
 	{Name: "neither", LocalPresent: false, RemotePresent: false,
 		Watch: WatchNoop, Download: DownloadNoop},
 	{Name: "both-size-differ", LocalPresent: true, RemotePresent: true, SizeEqual: false,
-		Watch: WatchPut, Download: DownloadGet, Note: "size distinto manda en ambos"},
+		MtimeDeltaSec: 0,
+		Watch:         WatchPut, Download: DownloadGet,
+		Note: "size distinto manda en ambos; mtime es IRRELEVANTE aquí (delta 0 a propósito)"},
+
+	// Transient remote names (.part/.tmp): download SIEMPRE los ignora
+	// (§2.3); watch los trata como cualquier remoto huérfano y los poda.
+	{Name: "remote-only-part", LocalPresent: false, RemotePresent: true, Transient: true,
+		Watch: WatchRemove, Download: DownloadNoop,
+		Note: "download IGNORA sufijo .part/.tmp (limitación heredada); watch sí limpia el huérfano"},
+	{Name: "both-part-remote-newer", LocalPresent: true, RemotePresent: true, SizeEqual: true,
+		MtimeDeltaSec: 99, Transient: true,
+		Watch: WatchNoop, Download: DownloadNoop,
+		Note: "aunque el remoto .part sea más nuevo, download lo ignora"},
 
 	// Both present, size equal — mtime boundary sweep (delta = remote - local).
 	{Name: "delta-minus3", LocalPresent: true, RemotePresent: true, SizeEqual: true, MtimeDeltaSec: -3,
@@ -102,9 +154,6 @@ var FileCases = []FileCase{
 		Watch: WatchNoop, Download: DownloadNoop},
 	{Name: "delta-plus2", LocalPresent: true, RemotePresent: true, SizeEqual: true, MtimeDeltaSec: 2,
 		Watch: WatchNoop, Download: DownloadNoop, Note: "frontera estricta: +2 NO descarga (anti-bucle)"},
-	{Name: "delta-plus2-subsec", LocalPresent: true, RemotePresent: true, SizeEqual: true, MtimeDeltaSec: 2,
-		Watch: WatchNoop, Download: DownloadNoop,
-		Note: "remoto +2s y fracción: trunca a 2 → noop. El driver DEBE truncar a segundos."},
 	{Name: "delta-plus3", LocalPresent: true, RemotePresent: true, SizeEqual: true, MtimeDeltaSec: 3,
 		Watch: WatchNoop, Download: DownloadGet, Note: "remoto > 2s más nuevo → descargar"},
 }
@@ -116,8 +165,8 @@ type DirCase struct {
 	LocalPresent bool
 }
 
-// DirPruneCases: a nested non-empty remote tree absent locally. Expected:
-// every dir removed, deepest-first, so RemoveDir never hits a non-empty dir.
+// DirPruneCases: a nested non-empty remote tree absent locally plus a
+// directory that exists locally and must survive.
 var DirPruneCases = []DirCase{
 	{RemoteRel: "a", LocalPresent: false},
 	{RemoteRel: "a/b", LocalPresent: false},
@@ -125,8 +174,25 @@ var DirPruneCases = []DirCase{
 	{RemoteRel: "keep", LocalPresent: true}, // present locally → NOT pruned
 }
 
-// DeepestFirst orders directory paths so children precede parents. This is
-// the order in which watch must call Storage.RemoveDir.
+// ExpectedDirPruned reports whether watch must RemoveDir this directory: a
+// remote directory is pruned iff it does not exist locally.
+func ExpectedDirPruned(c DirCase) bool { return !c.LocalPresent }
+
+// PruneOrder returns the directories that must be removed, in the exact
+// order watch must call Storage.RemoveDir (deepest-first), excluding any
+// that exist locally.
+func PruneOrder(cases []DirCase) []string {
+	var rel []string
+	for _, c := range cases {
+		if ExpectedDirPruned(c) {
+			rel = append(rel, c.RemoteRel)
+		}
+	}
+	return DeepestFirst(rel)
+}
+
+// DeepestFirst orders directory paths so children precede parents. Ties
+// (same depth) break on reverse-lexicographic order for determinism.
 func DeepestFirst(dirs []string) []string {
 	out := append([]string(nil), dirs...)
 	sort.Slice(out, func(i, j int) bool {
@@ -134,20 +200,12 @@ func DeepestFirst(dirs []string) []string {
 		if di != dj {
 			return di > dj // deeper first
 		}
-		return out[i] > out[j] // deterministic tiebreak
+		return out[i] > out[j] // deterministic tiebreak (reverse-lex)
 	})
 	return out
 }
 
-func depth(p string) int {
-	n := 0
-	for _, r := range p {
-		if r == '/' {
-			n++
-		}
-	}
-	return n
-}
+func depth(p string) int { return strings.Count(p, "/") }
 
 // WatchOp is a single Storage operation produced by a live watcher event.
 type WatchOp struct {
@@ -171,8 +229,3 @@ var EventCases = []EventCase{
 	{Kind: "moved", Src: "old.txt", Dst: "new.txt",
 		Expected: []WatchOp{{WatchRemove, "old.txt"}, {WatchPut, "new.txt"}}},
 }
-
-// IgnoredRemoteSuffixes are skipped by the download engine when scanning the
-// remote (transient uploader files). Known limitation: a legitimately-named
-// remote "x.part" is never downloaded (inherited from Python, not fixed).
-var IgnoredRemoteSuffixes = []string{".part", ".tmp"}
