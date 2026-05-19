@@ -74,11 +74,33 @@ Se imprime un aviso con las rutas.
 
 ## Instalación (Scoop)
 
-> Disponible al completar el step de release.
+Disponible tras el primer release etiquetado (`v0.1.0`):
 
 ```powershell
 scoop bucket add shizuka https://github.com/ShizukaJiku/scoop-bucket
 scoop install conduit
+conduit version
+```
+
+El manifest (`bucket/conduit.json`) lo genera y publica GoReleaser en cada
+release; `scoop update conduit` trae la última versión.
+
+## Release (mantenedor)
+
+Disparado por un tag `v*` (`.github/workflows/release.yml` → GoReleaser):
+
+```powershell
+git tag v0.1.0
+git push origin v0.1.0
+```
+
+Requiere el secret `SCOOP_BUCKET_TOKEN` en el repo (PAT fine-grained con
+`Contents: Read and write` sobre `ShizukaJiku/scoop-bucket`) para pushear
+el manifest al bucket. Validar localmente sin publicar:
+
+```powershell
+goreleaser check
+goreleaser release --snapshot --clean
 ```
 
 ## Build desde fuente

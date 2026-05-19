@@ -1,0 +1,33 @@
+name: release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write # crear el GitHub Release de conduit
+
+jobs:
+  goreleaser:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # GoReleaser necesita el historial/tags
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - uses: goreleaser/goreleaser-action@v6
+        with:
+          version: "~> v2"
+          args: release --clean
+        env:
+          # Release de conduit (este repo).
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Push cross-repo del manifest a ShizukaJiku/scoop-bucket.
+          # PAT fine-grained con Contents:RW sobre scoop-bucket.
+          SCOOP_BUCKET_TOKEN: ${{ secrets.SCOOP_BUCKET_TOKEN }}
