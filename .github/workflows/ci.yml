@@ -36,3 +36,10 @@ jobs:
 
       - name: test
         run: go test ./... -race -cover
+
+      - name: vet-e2e
+        run: go vet -tags e2e ./testutil/e2e/...
+
+      - name: e2e
+        timeout-minutes: 3
+        run: go test -tags e2e ./testutil/e2e/... -race -count=1 -timeout 120s
