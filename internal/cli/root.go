@@ -37,12 +37,13 @@ func newRoot() *cobra.Command {
 		// after flags are parsed, before any subcommand runs. The shared
 		// *cfg is filled in place so features see the resolved values.
 		PersistentPreRunE: func(cmd *cobra.Command, _ []string) error {
+			errw := cmd.ErrOrStderr()
 			if migrated, from, to, err := config.MigrateLegacy(); err != nil {
-				fmt.Fprintf(os.Stderr, "aviso: no se pudo migrar la config legacy: %v\n", err)
+				fmt.Fprintf(errw, "aviso: no se pudo migrar la config legacy: %v\n", err)
 			} else if migrated {
-				fmt.Fprintf(os.Stderr, "config migrada: %s → %s (revisá los permisos del archivo)\n", from, to)
+				fmt.Fprintf(errw, "config migrada: %s → %s (revisá los permisos del archivo)\n", from, to)
 			}
-			resolved, err := config.Resolve(cmd.Flags())
+			resolved, err := config.Resolve(cmd.Root().PersistentFlags())
 			if err != nil {
 				return err
 			}
@@ -72,6 +73,9 @@ func newFeaturesCmd() *cobra.Command {
 		Use:   "features",
 		Short: "Lista las funcionalidades (plugins) disponibles",
 		Args:  cobra.NoArgs,
+		// Read-only: skip the root PersistentPreRunE (no legacy migration
+		// nor config resolution side-effects for an informational command).
+		PersistentPreRunE: func(*cobra.Command, []string) error { return nil },
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			w := tabwriter.NewWriter(cmd.OutOrStdout(), 0, 0, 2, ' ', 0)
 			for _, f := range feature.All() {

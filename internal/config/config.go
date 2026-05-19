@@ -10,7 +10,6 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
 
 	"github.com/spf13/pflag"
@@ -112,9 +111,13 @@ func LegacyPath() (string, error) {
 }
 
 // LoadDefault loads from DefaultPath (missing file is not an error).
-func LoadDefault() (*Config, error) { return Load(mustDefaultPath()) }
-
-func mustDefaultPath() string { p, _ := DefaultPath(); return p }
+func LoadDefault() (*Config, error) {
+	p, err := DefaultPath()
+	if err != nil {
+		return nil, err
+	}
+	return Load(p)
+}
 
 // Load resolves configuration from env > file > defaults (no flags).
 // path may be "" to skip the file. A missing file is not an error.
@@ -142,9 +145,12 @@ func Resolve(flags *pflag.FlagSet) (*Config, error) {
 			}
 		}
 	}
-	path := mustDefaultPath()
+	path, err := DefaultPath()
+	if err != nil {
+		return nil, err
+	}
 	if flags != nil {
-		if f := flags.Lookup("config"); f != nil && f.Value.String() != "" {
+		if f := flags.Lookup("config"); f != nil && f.Changed {
 			path = f.Value.String()
 		}
 	}
@@ -175,7 +181,41 @@ type legacyJSON struct {
 	LocalFolder  string `json:"local_folder"`
 }
 
-func tomlString(s string) string { return strconv.Quote(s) } // TOML basic string
+// tomlBasicString encodes s as a TOML basic string using ONLY the escape
+// sequences TOML defines (strconv.Quote emits Go escapes like \a and \xHH
+// that TOML parsers reject, which would lock the user out after a silent
+// migration). Printable Unicode is kept literal; other control chars use
+// \uXXXX. Invalid UTF-8 degrades to U+FFFD (valid TOML, lossy but rare).
+func tomlBasicString(s string) string {
+	var b strings.Builder
+	b.WriteByte('"')
+	for _, r := range s {
+		switch r {
+		case '"':
+			b.WriteString(`\"`)
+		case '\\':
+			b.WriteString(`\\`)
+		case '\b':
+			b.WriteString(`\b`)
+		case '\t':
+			b.WriteString(`\t`)
+		case '\n':
+			b.WriteString(`\n`)
+		case '\f':
+			b.WriteString(`\f`)
+		case '\r':
+			b.WriteString(`\r`)
+		default:
+			if r < 0x20 || r == 0x7f {
+				fmt.Fprintf(&b, `\u%04X`, r)
+			} else {
+				b.WriteRune(r)
+			}
+		}
+	}
+	b.WriteByte('"')
+	return b.String()
+}
 
 // MigrateLegacy converts the Python ~/.sftpwatcher/config.json into
 // ~/.conduit/config.toml on first run. It is a no-op if the conduit
@@ -211,21 +251,34 @@ func MigrateLegacy() (migrated bool, from string, to string, err error) {
 	}
 	var b strings.Builder
 	fmt.Fprintf(&b, "# Migrado automáticamente desde %s\n", from)
-	fmt.Fprintf(&b, "local_folder = %s\n", tomlString(lj.LocalFolder))
-	fmt.Fprintf(&b, "remote_folder = %s\n", tomlString(remote))
+	fmt.Fprintf(&b, "local_folder = %s\n", tomlBasicString(lj.LocalFolder))
+	fmt.Fprintf(&b, "remote_folder = %s\n", tomlBasicString(remote))
 	fmt.Fprintf(&b, "poll_seconds = 15\n\n")
 	fmt.Fprintf(&b, "[backend]\ntype = \"sftp\"\n\n")
 	fmt.Fprintf(&b, "[backend.sftp]\n")
-	fmt.Fprintf(&b, "host = %s\n", tomlString(lj.Host))
+	fmt.Fprintf(&b, "host = %s\n", tomlBasicString(lj.Host))
 	fmt.Fprintf(&b, "port = %d\n", port)
-	fmt.Fprintf(&b, "user = %s\n", tomlString(lj.Username))
-	fmt.Fprintf(&b, "password = %s\n", tomlString(lj.Password))
+	fmt.Fprintf(&b, "user = %s\n", tomlBasicString(lj.Username))
+	fmt.Fprintf(&b, "password = %s\n", tomlBasicString(lj.Password))
 
 	if mkErr := os.MkdirAll(filepath.Dir(to), 0o700); mkErr != nil {
 		return false, from, to, fmt.Errorf("config: mkdir for migration: %w", mkErr)
 	}
-	if wErr := os.WriteFile(to, []byte(b.String()), 0o600); wErr != nil {
+	// O_EXCL: atomic create. Closes the stat→write TOCTOU and refuses to
+	// follow a symlink planted at `to` (would write the password elsewhere).
+	f, oerr := os.OpenFile(to, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+	if oerr != nil {
+		if errors.Is(oerr, fs.ErrExist) {
+			return false, from, to, nil // raced or already migrated
+		}
+		return false, from, to, fmt.Errorf("config: create migrated %s: %w", to, oerr)
+	}
+	if _, wErr := f.WriteString(b.String()); wErr != nil {
+		_ = f.Close()
 		return false, from, to, fmt.Errorf("config: write migrated %s: %w", to, wErr)
+	}
+	if cErr := f.Close(); cErr != nil {
+		return false, from, to, fmt.Errorf("config: close migrated %s: %w", to, cErr)
 	}
 	return true, from, to, nil
 }

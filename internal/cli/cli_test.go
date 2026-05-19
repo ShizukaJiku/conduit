@@ -2,6 +2,8 @@ package cli
 
 import (
 	"bytes"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -51,17 +53,57 @@ func TestVersionCommand(t *testing.T) {
 	}
 }
 
-func TestPersistentPreRunResolvesConfig(t *testing.T) {
+func TestReadOnlyCommandsSkipConfigAndMigration(t *testing.T) {
 	hermeticHome(t)
+	// version and features skip the root PersistentPreRunE: they must not
+	// migrate, must not resolve config, and must not fail for config
+	// reasons even with a bogus --config.
+	for _, args := range [][]string{
+		{"--config", "/no/such/conduit.toml", "features"},
+		{"--config", "/no/such/conduit.toml", "version"},
+	} {
+		r := newRoot()
+		var out bytes.Buffer
+		r.SetOut(&out)
+		r.SetErr(&out)
+		r.SetArgs(args)
+		if err := r.Execute(); err != nil {
+			t.Errorf("%v must not fail for config reasons: %v", args, err)
+		}
+	}
+}
+
+func TestPersistentPreRunMigratesLegacyOnFirstRun(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("USERPROFILE", home)
+	t.Setenv("HOME", home)
+
+	legacy := filepath.Join(home, ".sftpwatcher", "config.json")
+	if err := os.MkdirAll(filepath.Dir(legacy), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// Empty local_folder → after migration+resolve the root
+	// PersistentPreRunE runs (watch has none of its own), then watch RunE
+	// returns the validation error fast (no engine, no hang).
+	const js = `{"host":"h","port":22,"username":"u","password":"p","remote_folder":"/","local_folder":""}`
+	if err := os.WriteFile(legacy, []byte(js), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
 	r := newRoot()
 	var out bytes.Buffer
 	r.SetOut(&out)
 	r.SetErr(&out)
-	// --config points to a missing file (tolerated → defaults); the
-	// PersistentPreRunE must still resolve without error.
-	r.SetArgs([]string{"--config", "/no/such/conduit.toml", "features"})
-	if err := r.Execute(); err != nil {
-		t.Fatalf("resolve with missing --config must not fail: %v", err)
+	r.SetArgs([]string{"watch"})
+	err := r.Execute()
+	if err == nil {
+		t.Fatal("watch with empty local_folder must error after migration")
+	}
+	if _, serr := os.Stat(filepath.Join(home, ".conduit", "config.toml")); serr != nil {
+		t.Errorf("legacy config must have been migrated: %v", serr)
+	}
+	if !strings.Contains(out.String(), "config migrada") {
+		t.Errorf("expected migration notice on stderr, got: %q", out.String())
 	}
 }
 

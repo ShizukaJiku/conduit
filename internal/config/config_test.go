@@ -1,6 +1,7 @@
 package config
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -108,6 +109,69 @@ func TestMigrateLegacy(t *testing.T) {
 	}
 }
 
+// TestTomlBasicStringRoundTrip is a property test: whatever
+// tomlBasicString emits must parse back (via the real TOML loader) to the
+// original value. This avoids brittle hardcoded \uXXXX expectations and
+// directly proves the migrated config is loadable.
+func TestTomlBasicStringRoundTrip(t *testing.T) {
+	inputs := []string{
+		"plain",
+		`a"b`,
+		`a\b`,
+		"tab\there",
+		"newline\nhere",
+		"cr\rhere",
+		"form\ffeed",
+		"back\bspace",
+		"bell" + string(rune(0x07)) + "x", // not a TOML escape → \uXXXX
+		"del" + string(rune(0x7f)),
+		"unicode-ñé€-日本",
+		`mix "q" \s ` + string(rune(0x01)) + "\t end",
+	}
+	for _, in := range inputs {
+		p := filepath.Join(t.TempDir(), "c.toml")
+		body := "[backend.sftp]\npassword = " + tomlBasicString(in) + "\n"
+		if err := os.WriteFile(p, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		c, err := Load(p)
+		if err != nil {
+			t.Fatalf("encoded %q produced invalid TOML (%s): %v", in, body, err)
+		}
+		if c.Backend.SFTP.Password != in {
+			t.Errorf("round-trip mismatch: in=%q out=%q (toml=%s)", in, c.Backend.SFTP.Password, body)
+		}
+	}
+}
+
+func TestMigrateLegacyExoticPasswordRoundTrips(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("USERPROFILE", home)
+	t.Setenv("HOME", home)
+	legacy := filepath.Join(home, ".sftpwatcher", "config.json")
+	if err := os.MkdirAll(filepath.Dir(legacy), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// Password with quote, backslash, tab and a control char that
+	// strconv.Quote would have rendered as an invalid TOML escape.
+	pw := "p\"a\\s\tword" + string(rune(0x07))
+	js, _ := json.Marshal(legacyJSON{Host: "h", Port: 22, Username: "u", Password: pw, LocalFolder: "L"})
+	if err := os.WriteFile(legacy, js, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	migrated, _, to, err := MigrateLegacy()
+	if err != nil || !migrated {
+		t.Fatalf("migrate: migrated=%v err=%v", migrated, err)
+	}
+	c, err := Load(to) // must parse as valid TOML and round-trip the password
+	if err != nil {
+		t.Fatalf("migrated TOML must be valid: %v", err)
+	}
+	if c.Backend.SFTP.Password != pw {
+		t.Errorf("password round-trip = %q, want %q", c.Backend.SFTP.Password, pw)
+	}
+}
+
 func TestMigrateLegacyNoLegacyFile(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("USERPROFILE", home)
@@ -180,7 +244,6 @@ func TestDefaultPathAndLoadDefault(t *testing.T) {
 	if filepath.Base(p) != "config.toml" || filepath.Base(filepath.Dir(p)) != ".conduit" {
 		t.Errorf("DefaultPath = %q, want ~/.conduit/config.toml", p)
 	}
-	// LoadDefault must succeed even if the file does not exist (defaults).
 	c, err := LoadDefault()
 	if err != nil {
 		t.Fatalf("LoadDefault: %v", err)
