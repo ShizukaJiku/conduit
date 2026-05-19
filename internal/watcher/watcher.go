@@ -35,8 +35,10 @@ func (o Op) String() string {
 		return "created"
 	case Modified:
 		return "modified"
-	default:
+	case Deleted:
 		return "deleted"
+	default:
+		return "unknown"
 	}
 }
 
@@ -109,14 +111,19 @@ func (w *Watcher) addTree(dir string) error {
 			return nil // skip unreadable entries; not fatal
 		}
 		if d.IsDir() {
-			_ = w.fsw.Add(p)
+			if aerr := w.fsw.Add(p); aerr != nil {
+				w.emitErr(aerr) // partial coverage is surfaced, not silent
+			}
 		}
 		return nil
 	})
 }
 
 // rewalkEmit adds watches for a freshly-seen directory subtree and emits
-// Created for every file in it (covers the D3 race window).
+// Created for every file in it (covers the D3 race window). A file may
+// also get a separate fsnotify Create, yielding a duplicate Created — the
+// engine's Put is idempotent, so this is extra work, not a correctness
+// bug.
 func (w *Watcher) rewalkEmit(dir string) {
 	_ = filepath.WalkDir(dir, func(p string, d os.DirEntry, err error) error {
 		if err != nil {

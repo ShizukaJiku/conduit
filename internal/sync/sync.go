@@ -78,10 +78,12 @@ func toRel(root, abs string) (string, bool) {
 	return rel, true
 }
 
-func (e *Engine) scanLocal() (files map[string]localInfo, dirs map[string]bool, err error) {
-	files = map[string]localInfo{}
-	dirs = map[string]bool{}
-	walkErr := filepath.WalkDir(e.local, func(p string, d fs.DirEntry, err error) error {
+func (e *Engine) scanLocal() (map[string]localInfo, map[string]bool, error) {
+	files := map[string]localInfo{}
+	dirs := map[string]bool{}
+	// The callback never returns an error (unreadable entries are skipped),
+	// so WalkDir only fails if the root itself is unreadable.
+	err := filepath.WalkDir(e.local, func(p string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return nil // skip unreadable entries
 		}
@@ -100,7 +102,7 @@ func (e *Engine) scanLocal() (files map[string]localInfo, dirs map[string]bool, 
 		files[rel] = localInfo{sizeBytes: info.Size(), mtimeSec: info.ModTime().Unix()}
 		return nil
 	})
-	return files, dirs, walkErr
+	return files, dirs, err
 }
 
 // deepestFirst orders directories so children precede parents (so
@@ -145,7 +147,11 @@ func (e *Engine) FullResync() error {
 		abs := filepath.Join(e.local, filepath.FromSlash(rel))
 		if err := e.store.Put(abs, rel); err != nil {
 			e.log.Errorf("put %s: %v", rel, err)
-			return err // connection-level failure → caller reconnects
+			// Fail-fast: a Put error is treated as a connection-level
+			// failure. The caller (Run) reconnects and re-runs a full
+			// resync, which restores remote consistency (deletes/prune
+			// included). FullResync is only atomic on the happy path.
+			return err
 		}
 		e.log.Infof("uploaded %s", rel)
 	}
@@ -194,17 +200,23 @@ func (e *Engine) applyEvent(w *watcher.Watcher, ev watcher.Event) {
 		}
 		e.log.Infof("uploaded %s", rel)
 	case watcher.Deleted:
-		// Could be a file or a (now-gone) directory; be lenient.
+		// The path is gone locally; we can't tell if it was a file or a
+		// directory. Try Remove, then fall back to RemoveDir so a deleted
+		// directory is also reflected remotely (MEDIUM-2).
 		if err := e.store.Remove(rel); err != nil {
-			e.log.Errorf("remove %s: %v", rel, err)
-			return
+			if derr := e.store.RemoveDir(rel); derr != nil {
+				e.log.Errorf("remove %s: %v", rel, err)
+				return
+			}
 		}
 		e.log.Infof("removed remote %s", rel)
 	}
 }
 
 func (e *Engine) reconnect(ctx context.Context) error {
-	_ = e.store.Close()
+	if err := e.store.Close(); err != nil {
+		e.log.Errorf("reconnect: close previous session: %v", err)
+	}
 	if err := e.store.Connect(ctx); err != nil {
 		e.log.Errorf("reconnect: %v", err)
 		return err
@@ -233,22 +245,26 @@ func (e *Engine) Run(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	defer w.Close() // HIGH-1: close even if Start fails (no fd leak)
 	if err := w.Start(); err != nil {
 		return err
 	}
-	defer w.Close()
 
+	// HIGH-2: arm one keepalive timer and re-arm only when it fires,
+	// instead of creating a fresh timer on every loop iteration.
+	keepalive := e.clk.After(e.keepEvery)
 	for {
 		select {
 		case <-ctx.Done():
 			return nil
-		case <-e.clk.After(e.keepEvery):
+		case <-keepalive:
 			if err := e.store.Ping(); err != nil {
 				e.log.Errorf("keepalive: %v", err)
 				if rerr := e.reconnect(ctx); rerr == nil {
 					_ = e.FullResync()
 				}
 			}
+			keepalive = e.clk.After(e.keepEvery)
 		case ev, ok := <-w.Events():
 			if !ok {
 				return nil

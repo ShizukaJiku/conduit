@@ -48,6 +48,10 @@ func run(parent context.Context, d feature.Deps) error {
 		return errors.New("watch: backend de storage no disponible")
 	}
 
+	// Catch Ctrl+C before any blocking work (store construction included).
+	ctx, stop := signal.NotifyContext(parent, syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+
 	// Open the real log sink only now that a long-running command runs, so
 	// read-only commands never create ~/.conduit.
 	log := d.Log
@@ -55,6 +59,8 @@ func run(parent context.Context, d feature.Deps) error {
 		if lg, closer, oerr := logx.Open(lp); oerr == nil {
 			log = lg
 			defer closer.Close()
+		} else {
+			log.Warnf("watch: no se pudo abrir el log %s (sigo sin log en disco): %v", lp, oerr)
 		}
 	}
 
@@ -62,9 +68,6 @@ func run(parent context.Context, d feature.Deps) error {
 	if err != nil {
 		return err
 	}
-
-	ctx, stop := signal.NotifyContext(parent, syscall.SIGINT, syscall.SIGTERM)
-	defer stop()
 
 	log.Infof("watch: espejando %s → backend %s", d.Config.LocalFolder, d.Config.Backend.Type)
 	eng := syncengine.New(store, d.Config.LocalFolder, log, clock.System{})

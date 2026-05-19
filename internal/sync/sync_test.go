@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -234,20 +235,23 @@ func TestApplyEventCreateModifyDelete(t *testing.T) {
 }
 
 // failPingStore wraps memfs, failing the first Ping and counting Connects.
+// Connect runs on the engine goroutine while the test reads connects, so
+// the counters are atomic (this is a test-only race guard).
 type failPingStore struct {
 	storage.Storage
-	connects int
-	pinged   bool
+	connectsN atomic.Int32
+	pingedN   atomic.Int32
 }
 
+func (f *failPingStore) connects() int { return int(f.connectsN.Load()) }
+
 func (f *failPingStore) Connect(ctx context.Context) error {
-	f.connects++
+	f.connectsN.Add(1)
 	return f.Storage.Connect(ctx)
 }
 
 func (f *failPingStore) Ping() error {
-	if !f.pinged {
-		f.pinged = true
+	if f.pingedN.Add(1) == 1 {
 		return errors.New("simulated drop")
 	}
 	return f.Storage.Ping()
@@ -259,12 +263,12 @@ func TestReconnect(t *testing.T) {
 	if err := fs.Connect(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	before := fs.connects
+	before := fs.connects()
 	if err := e.reconnect(context.Background()); err != nil {
 		t.Fatalf("reconnect: %v", err)
 	}
-	if fs.connects != before+1 {
-		t.Errorf("reconnect must re-Connect: connects %d → %d", before, fs.connects)
+	if fs.connects() != before+1 {
+		t.Errorf("reconnect must re-Connect: connects %d → %d", before, fs.connects())
 	}
 }
 
@@ -375,12 +379,12 @@ func TestRunReconnectsOnKeepaliveFailure(t *testing.T) {
 	// Drive keepalive ticks deterministically via the fake clock until the
 	// first (failing) Ping forces a reconnect.
 	deadline := time.After(5 * time.Second)
-	for fs.connects < 2 {
+	for fs.connects() < 2 {
 		fk.Fire() // no-op if Run hasn't reached the select yet
 		select {
 		case <-deadline:
 			cancel()
-			t.Fatalf("expected reconnect after keepalive failure, connects=%d", fs.connects)
+			t.Fatalf("expected reconnect after keepalive failure, connects=%d", fs.connects())
 		case <-time.After(5 * time.Millisecond):
 		}
 	}
