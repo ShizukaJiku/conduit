@@ -20,6 +20,34 @@ Sincronizador de carpetas multi-PC, headless y **storage-agnóstico**, en un
 `conduit --help` lista todo (los plugins provienen del registro, no están
 hardcodeados). Ambos motores corren hasta `Ctrl+C`.
 
+### `watch --screen` (captura de pantalla, Windows)
+
+`conduit watch --screen` corre el espejo normal **y además** un capturador de
+pantalla por hotkey en segundo plano. Flujo:
+
+1. Pulsá el hotkey global (default **`Ctrl+Shift+S`**).
+2. Hacé **clic izquierdo en 2 esquinas opuestas** del rectángulo a capturar
+   (`Esc` cancela; si no clicás en ~30 s se cancela solo).
+3. El PNG se guarda en `<local_folder>/<screen.dir>/` (default subcarpeta
+   `screenshot/`) como `screenshot-AAAAMMDD-HHMMSS.mmm.png`.
+
+Como esa subcarpeta está **dentro de la carpeta vigilada**, el propio `watch`
+sube la captura al backend automáticamente. La captura no muestra overlay (es
+invisible). Solo Windows; en otros SO el flag avisa y se desactiva sin afectar
+el espejo. Un hotkey inválido o ya en uso también se desactiva sin abortar `watch`.
+
+```toml
+[screen]
+hotkey = "ctrl+shift+s"   # modificadores ctrl/shift/alt/win + tecla A-Z, 0-9 o F1-F24
+dir    = "screenshot"     # subcarpeta (relativa a local_folder) donde se guardan
+```
+
+| Flag | Env | Clave |
+|------|-----|-------|
+| `--screen` | — | (activa la captura; transitorio) |
+| — | `CONDUIT_SCREEN_HOTKEY` | `screen.hotkey` |
+| — | `CONDUIT_SCREEN_DIR` | `screen.dir` |
+
 ## Configuración
 
 Precedencia: **flags > variables de entorno (`CONDUIT_*`) > archivo > defaults**.

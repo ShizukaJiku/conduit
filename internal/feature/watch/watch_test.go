@@ -36,6 +36,17 @@ func TestRegisteredAndCommand(t *testing.T) {
 	}
 }
 
+func TestScreenFlag(t *testing.T) {
+	cmd := watchFeature(t).NewCommand(feature.Deps{})
+	f := cmd.Flags().Lookup("screen")
+	if f == nil {
+		t.Fatal("watch command is missing the --screen flag")
+	}
+	if f.DefValue != "false" {
+		t.Errorf("--screen default = %q, want false", f.DefValue)
+	}
+}
+
 func TestRunValidationErrors(t *testing.T) {
 	f := watchFeature(t)
 
@@ -53,6 +64,73 @@ func TestRunValidationErrors(t *testing.T) {
 	cmd = f.NewCommand(feature.Deps{Config: &config.Config{LocalFolder: t.TempDir()}})
 	if err := cmd.RunE(cmd, nil); err == nil {
 		t.Error("expected error with nil Storage factory")
+	}
+}
+
+// TestScreenInvalidHotkeyIsNonFatal verifies that enabling --screen with a
+// bad hotkey logs and disables capture WITHOUT aborting the watch (and
+// without registering a real global hotkey). The context is pre-cancelled
+// so the mirror returns immediately.
+func TestScreenInvalidHotkeyIsNonFatal(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("USERPROFILE", home)
+	t.Setenv("HOME", home)
+
+	shared := memfs.NewClocked(func() time.Time { return time.Unix(1_700_000_000, 0) })
+	deps := feature.Deps{
+		Config: &config.Config{
+			LocalFolder: t.TempDir(),
+			Backend:     config.Backend{Type: "memfs"},
+			Screen:      config.ScreenConfig{Hotkey: "not-a-valid-hotkey", Dir: "screenshot"},
+		},
+		Storage: func(*config.Config) (storage.Storage, error) { return shared, nil },
+	}
+
+	cmd := watchFeature(t).NewCommand(deps)
+	if err := cmd.Flags().Set("screen", "true"); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // mirror returns at once; the bad hotkey path runs first
+	cmd.SetContext(ctx)
+
+	if err := cmd.RunE(cmd, nil); err != nil {
+		t.Errorf("an invalid screen hotkey must not abort watch, got %v", err)
+	}
+}
+
+// TestScreenDirEscapeIsRejected verifies a screen.dir that would resolve
+// outside local_folder disables capture without aborting watch and without
+// creating the escaping directory.
+func TestScreenDirEscapeIsRejected(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("USERPROFILE", home)
+	t.Setenv("HOME", home)
+
+	local := t.TempDir()
+	shared := memfs.NewClocked(func() time.Time { return time.Unix(1_700_000_000, 0) })
+	deps := feature.Deps{
+		Config: &config.Config{
+			LocalFolder: local,
+			Backend:     config.Backend{Type: "memfs"},
+			Screen:      config.ScreenConfig{Hotkey: "ctrl+shift+s", Dir: "../escape"},
+		},
+		Storage: func(*config.Config) (storage.Storage, error) { return shared, nil },
+	}
+
+	cmd := watchFeature(t).NewCommand(deps)
+	if err := cmd.Flags().Set("screen", "true"); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	cmd.SetContext(ctx)
+
+	if err := cmd.RunE(cmd, nil); err != nil {
+		t.Errorf("an escaping screen.dir must not abort watch, got %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(filepath.Dir(local), "escape")); err == nil {
+		t.Error("escaping directory was created; containment guard failed")
 	}
 }
 

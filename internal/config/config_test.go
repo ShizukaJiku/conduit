@@ -199,6 +199,27 @@ func TestDefaults(t *testing.T) {
 	if c.RemoteFolder != "/" {
 		t.Errorf("remote_folder default = %q, want /", c.RemoteFolder)
 	}
+	if c.Screen.Hotkey != "ctrl+shift+s" {
+		t.Errorf("screen.hotkey default = %q, want ctrl+shift+s", c.Screen.Hotkey)
+	}
+	if c.Screen.Dir != "screenshot" {
+		t.Errorf("screen.dir default = %q, want screenshot", c.Screen.Dir)
+	}
+}
+
+func TestScreenEnvOverride(t *testing.T) {
+	t.Setenv("CONDUIT_SCREEN_HOTKEY", "ctrl+alt+p")
+	t.Setenv("CONDUIT_SCREEN_DIR", "shots")
+	c, err := Load("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.Screen.Hotkey != "ctrl+alt+p" {
+		t.Errorf("CONDUIT_SCREEN_HOTKEY not applied: %q", c.Screen.Hotkey)
+	}
+	if c.Screen.Dir != "shots" {
+		t.Errorf("CONDUIT_SCREEN_DIR not applied: %q", c.Screen.Dir)
+	}
 }
 
 func TestMissingExplicitFileIsNotError(t *testing.T) {
