@@ -83,6 +83,13 @@ func run(parent context.Context, d feature.Deps, screen bool) error {
 // are logged and the watch keeps running. Screenshots land in a subfolder
 // of the watched local folder so the mirror uploads them automatically.
 func startScreen(ctx context.Context, d feature.Deps, log *logx.Logger) {
+	// Bail before any filesystem mutation on unsupported OSes, so --screen
+	// is a true no-op there (it must not create <local>/screenshot, which
+	// the mirror would then upload).
+	if !screencap.Supported {
+		log.Warnf("screen: captura no soportada en este sistema operativo (capturas desactivadas)")
+		return
+	}
 	hk, err := screencap.ParseHotkey(d.Config.Screen.Hotkey)
 	if err != nil {
 		log.Errorf("screen: hotkey inválido (capturas desactivadas): %v", err)

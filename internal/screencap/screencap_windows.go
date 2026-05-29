@@ -33,6 +33,9 @@ const (
 	captureWindow = 30 * time.Second // abort a selection with no clicks
 )
 
+// Supported reports whether screen capture works on this OS (true here).
+const Supported = true
+
 var (
 	user32   = windows.NewLazySystemDLL("user32.dll")
 	kernel32 = windows.NewLazySystemDLL("kernel32.dll")

@@ -9,6 +9,9 @@ import (
 	"github.com/ShizukaJiku/conduit/internal/logx"
 )
 
+// Supported reports whether screen capture works on this OS (false here).
+const Supported = false
+
 // Run is unsupported off Windows: the global hotkey, mouse polling and GDI
 // capture are Win32-only. Returns an error so the caller can log and keep
 // the rest of the watch running.
