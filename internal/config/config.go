@@ -32,14 +32,21 @@ type Backend struct {
 	SFTP SFTPConfig `mapstructure:"sftp"`
 }
 
+// ScreenConfig configures the `watch --screen` capture daemon (Windows).
+type ScreenConfig struct {
+	Hotkey string `mapstructure:"hotkey"` // e.g. "ctrl+shift+s"
+	Dir    string `mapstructure:"dir"`    // subfolder under LocalFolder for PNGs
+}
+
 // Config is the resolved runtime configuration.
 type Config struct {
-	LocalFolder  string  `mapstructure:"local_folder"`
-	RemoteFolder string  `mapstructure:"remote_folder"`
-	PollSeconds  int     `mapstructure:"poll_seconds"`
-	LogFile      string  `mapstructure:"log_file"`
-	Verbose      bool    `mapstructure:"verbose"`
-	Backend      Backend `mapstructure:"backend"`
+	LocalFolder  string       `mapstructure:"local_folder"`
+	RemoteFolder string       `mapstructure:"remote_folder"`
+	PollSeconds  int          `mapstructure:"poll_seconds"`
+	LogFile      string       `mapstructure:"log_file"`
+	Verbose      bool         `mapstructure:"verbose"`
+	Backend      Backend      `mapstructure:"backend"`
+	Screen       ScreenConfig `mapstructure:"screen"`
 }
 
 // envKeys are bound explicitly so AutomaticEnv reaches nested struct keys.
@@ -49,6 +56,7 @@ var envKeys = []string{
 	"backend.sftp.host", "backend.sftp.port", "backend.sftp.user",
 	"backend.sftp.password", "backend.sftp.known_hosts",
 	"backend.sftp.insecure_host_key",
+	"screen.hotkey", "screen.dir",
 }
 
 // flagToKey maps a persistent CLI flag name to its viper config key.
@@ -66,6 +74,8 @@ func newViper() *viper.Viper {
 	v.SetDefault("poll_seconds", 15)
 	v.SetDefault("backend.type", "sftp")
 	v.SetDefault("backend.sftp.port", 22)
+	v.SetDefault("screen.hotkey", "ctrl+shift+s")
+	v.SetDefault("screen.dir", "screenshot")
 	v.SetEnvPrefix("CONDUIT")
 	v.SetEnvKeyReplacer(strings.NewReplacer(".", "_"))
 	v.AutomaticEnv()
